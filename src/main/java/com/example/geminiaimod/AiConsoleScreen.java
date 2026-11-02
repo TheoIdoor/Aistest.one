@@ -13,17 +13,19 @@ import java.util.List;
 
 public class AiConsoleScreen extends Screen {
     private EditBox inputField;
-    private static final List<String> chatHistory = new ArrayList<>();
+    private Button sendButton;
+
+    // Static, damit der Chatverlauf beim Schließen und Wiederöffnen erhalten bleibt
+    private static final List<String> CHAT_HISTORY = new ArrayList<>();
+    private int scrollOffset = 0;
+    private boolean isWaitingForResponse = false;
+
+    private static final int LINE_HEIGHT = 11;
 
     public AiConsoleScreen() {
         super(Component.literal("Gemini KI-Konsole"));
-        if (chatHistory.isEmpty()) {
-            chatHistory.add("§b[Gemini]:§r Willkommen in der KI-Konsole!");
-            if (!GeminiService.hasApiKey()) {
-                chatHistory.add("§e[Info]:§r Bitte gib zuerst deinen Gemini API-Key ein mit: §a/apikey DEIN_KEY");
-            } else {
-                chatHistory.add("§7Tipp: Schreibe Befehle, Wünsche oder Config-Änderungen einfach als normalen Satz.");
-            }
+        if (CHAT_HISTORY.isEmpty()) {
+            CHAT_HISTORY.add("§b[System]: §fWillkommen! Stelle eine Frage oder setze deinen Key mit §e/apikey DEIN_KEY");
         }
     }
 
@@ -31,78 +33,173 @@ public class AiConsoleScreen extends Screen {
     protected void init() {
         super.init();
 
-        this.inputField = new EditBox(this.font, 20, this.height - 35, this.width - 155, 20, Component.literal("Eingabe"));
-        this.inputField.setMaxLength(1024);
+        int inputWidth = this.width - 105;
+        this.inputField = new EditBox(this.font, 15, this.height - 30, inputWidth, 20, Component.literal("Nachricht..."));
+        // Wichtig: Standardmäßig erlaubt Minecraft nur 32 Zeichen (schneidet API-Keys sonst ab!)
+        this.inputField.setMaxLength(512);
         this.inputField.setFocused(true);
         this.addRenderableWidget(this.inputField);
         this.setInitialFocus(this.inputField);
 
-        Button sendButton = Button.builder(Component.literal("Senden"), button -> sendPrompt())
-                .bounds(this.width - 130, this.height - 35, 55, 20)
+        this.sendButton = Button.builder(Component.literal("Senden"), btn -> this.handleSendMessage())
+                .bounds(this.width - 85, this.height - 30, 70, 20)
                 .build();
-        this.addRenderableWidget(sendButton);
+        this.addRenderableWidget(this.sendButton);
 
-        Button clearButton = Button.builder(Component.literal("Leeren"), button -> chatHistory.clear())
-                .bounds(this.width - 70, this.height - 35, 50, 20)
-                .build();
-        this.addRenderableWidget(clearButton);
+        scrollToBottom();
     }
 
-    private void sendPrompt() {
-        String prompt = this.inputField.getValue().trim();
-        if (prompt.isEmpty()) return;
+    private void handleSendMessage() {
+        String text = this.inputField.getValue().trim();
+        if (text.isEmpty()) return;
 
         this.inputField.setValue("");
 
-        if (prompt.startsWith("/apikey ")) {
-            String newKey = prompt.substring("/apikey ".length()).trim();
-            GeminiService.saveApiKey(newKey);
-            chatHistory.add("§a[System]:§r Gemini API-Key wurde erfolgreich in config/geminiaimod.json gespeichert!");
+        // Eigener Befehl zum Leeren des Fensters
+        if (text.equalsIgnoreCase("/clear")) {
+            CHAT_HISTORY.clear();
+            this.scrollOffset = 0;
             return;
         }
 
-        chatHistory.add("§a[Du]:§r " + prompt);
-        chatHistory.add("§7[Gemini denkt nach...]§r");
+        // API-Key Befehl abfangen (unterstützt /apikey und !apikey)
+        if (text.toLowerCase().startsWith("/apikey ") || text.toLowerCase().startsWith("!apikey ")) {
+            String newKey = text.substring(8).trim();
+            GeminiService.saveApiKey(newKey);
+            addMessage("§a[System]: API-Key wurde erfolgreich in config/geminiaimod.json gespeichert!");
+            return;
+        }
 
-        GeminiService.askGeminiAsync(prompt, response -> {
-            chatHistory.removeIf(msg -> msg.equals("§7[Gemini denkt nach...]§r"));
-            chatHistory.add("§b[Gemini]:§r " + response);
+        if (this.isWaitingForResponse) {
+            addMessage("§e[System]: Bitte warte kurz, die KI verarbeitet noch deine letzte Anfrage...");
+            return;
+        }
+
+        addMessage("§e[Du]: §f" + text);
+        addMessage("§7[Gemini denkt nach...]");
+        this.isWaitingForResponse = true;
+
+        GeminiService.askGeminiAsync(text, response -> {
+            // Entferne den "denkt nach..." Platzhalter wieder
+            if (!CHAT_HISTORY.isEmpty() && CHAT_HISTORY.get(CHAT_HISTORY.size() - 1).equals("§7[Gemini denkt nach...]")) {
+                CHAT_HISTORY.remove(CHAT_HISTORY.size() - 1);
+            }
+            this.isWaitingForResponse = false;
+            addMessage("§b[Gemini]: §f" + response);
         });
+    }
+
+    public void addMessage(String msg) {
+        CHAT_HISTORY.add(msg);
+        scrollToBottom();
+    }
+
+    private List<FormattedCharSequence> getWrappedLines(int maxTextWidth) {
+        List<FormattedCharSequence> lines = new ArrayList<>();
+        for (String msg : CHAT_HISTORY) {
+            for (String paragraph : msg.split("\n")) {
+                List<FormattedCharSequence> split = this.font.split(Component.literal(paragraph), maxTextWidth);
+                if (split.isEmpty()) {
+                    lines.add(FormattedCharSequence.EMPTY);
+                } else {
+                    lines.addAll(split);
+                }
+            }
+        }
+        return lines;
+    }
+
+    private void scrollToBottom() {
+        if (this.font == null) return;
+        int boxWidth = Math.max(50, this.width - 45);
+        int boxHeight = Math.max(20, this.height - 70);
+        int maxVisibleLines = Math.max(1, (boxHeight - 10) / LINE_HEIGHT);
+        List<FormattedCharSequence> allLines = getWrappedLines(boxWidth);
+        this.scrollOffset = Math.max(0, allLines.size() - maxVisibleLines);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+        int boxWidth = Math.max(50, this.width - 45);
+        int boxHeight = Math.max(20, this.height - 70);
+        int maxVisibleLines = Math.max(1, (boxHeight - 10) / LINE_HEIGHT);
+        List<FormattedCharSequence> allLines = getWrappedLines(boxWidth);
+        int maxScroll = Math.max(0, allLines.size() - maxVisibleLines);
+
+        if (delta > 0) {
+            this.scrollOffset = Math.max(0, this.scrollOffset - 2);
+        } else if (delta < 0) {
+            this.scrollOffset = Math.min(maxScroll, this.scrollOffset + 2);
+        }
+        return true;
     }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        // Senden per Enter-Taste oder Numpad-Enter
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            sendPrompt();
+            this.handleSendMessage();
+            return true;
+        }
+        // Auch mit Pfeiltasten Hoch/Runter oder Bild-Auf/Ab scrollen
+        if (keyCode == GLFW.GLFW_KEY_PAGE_UP) {
+            this.mouseScrolled(0, 0, 1);
+            return true;
+        }
+        if (keyCode == GLFW.GLFW_KEY_PAGE_DOWN) {
+            this.mouseScrolled(0, 0, -1);
             return true;
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
     @Override
-    public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-        this.renderBackground(guiGraphics);
-        guiGraphics.fill(15, 25, this.width - 15, this.height - 45, 0xCC101018);
-        guiGraphics.renderOutline(15, 25, this.width - 30, this.height - 70, 0xFF3A86FF);
+    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        this.renderBackground(graphics);
 
-        guiGraphics.drawCenteredString(this.font, "§l§bGemini KI-Konsole & Live Config-Manager", this.width / 2, 10, 0xFFFFFF);
+        // Titel oben mittig
+        graphics.drawCenteredString(this.font, this.title, this.width / 2, 10, 0xFFFFFF);
 
-        int yOffset = 35;
-        int maxWidth = this.width - 45;
-        int startIndex = Math.max(0, chatHistory.size() - 12);
+        int boxLeft = 15;
+        int boxTop = 25;
+        int boxRight = this.width - 15;
+        int boxBottom = this.height - 40;
+        int boxHeight = boxBottom - boxTop;
+        int textWidth = (boxRight - boxLeft) - 18;
 
-        for (int i = startIndex; i < chatHistory.size(); i++) {
-            List<FormattedCharSequence> lines = this.font.split(Component.literal(chatHistory.get(i)), maxWidth);
-            for (FormattedCharSequence line : lines) {
-                if (yOffset < this.height - 55) {
-                    guiGraphics.drawString(this.font, line, 22, yOffset, 0xFFFFFF);
-                    yOffset += 11;
-                }
-            }
-            yOffset += 4;
+        // Hintergrund des Chat-Kastens + dezenter Rahmen
+        graphics.fill(boxLeft, boxTop, boxRight, boxBottom, 0xA0000000);
+        graphics.fill(boxLeft, boxTop, boxRight, boxTop + 1, 0xFF555555);
+        graphics.fill(boxLeft, boxBottom - 1, boxRight, boxBottom, 0xFF555555);
+
+        List<FormattedCharSequence> allLines = getWrappedLines(Math.max(50, textWidth));
+        int maxVisibleLines = Math.max(1, (boxHeight - 10) / LINE_HEIGHT);
+        int maxScroll = Math.max(0, allLines.size() - maxVisibleLines);
+
+        if (this.scrollOffset > maxScroll) this.scrollOffset = maxScroll;
+        if (this.scrollOffset < 0) this.scrollOffset = 0;
+
+        // Sichtbare Zeilen zeichnen
+        int y = boxTop + 6;
+        for (int i = this.scrollOffset; i < allLines.size() && i < this.scrollOffset + maxVisibleLines; i++) {
+            graphics.drawString(this.font, allLines.get(i), boxLeft + 6, y, 0xFFFFFF, false);
+            y += LINE_HEIGHT;
         }
 
-        super.render(guiGraphics, mouseX, mouseY, partialTick);
+        // Visueller Scrollbalken auf der rechten Seite (erscheint, sobald der Text länger als das Fenster ist)
+        if (maxScroll > 0) {
+            int scrollbarX = boxRight - 6;
+            int trackTop = boxTop + 4;
+            int trackHeight = boxHeight - 8;
+
+            graphics.fill(scrollbarX, trackTop, scrollbarX + 3, trackTop + trackHeight, 0x55FFFFFF);
+
+            int thumbHeight = Math.max(12, (int) ((float) maxVisibleLines / allLines.size() * trackHeight));
+            int thumbY = trackTop + (int) ((float) this.scrollOffset / maxScroll * (trackHeight - thumbHeight));
+            graphics.fill(scrollbarX, thumbY, scrollbarX + 3, thumbY + thumbHeight, 0xFFAAAAAA);
+        }
+
+        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override
