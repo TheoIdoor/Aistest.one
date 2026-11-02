@@ -1,0 +1,26 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="geminiaimod"
+version="1.0.0"
+displayName="Gemini AI Console & Config Mod"
+authors="GeminiAI"
+description='''
+Fügt eine KI-gestützte Textkonsole (Standard-Taste: L) hinzu, die komplexe Minecraft-Befehle ausführt und sowohl die Minecraft options.txt als auch Mod-Configs (.toml) direkt im Spiel bearbeiten kann.
+'''
+
+[[dependencies.geminiaimod]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.geminiaimod]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.21)"
+    ordering="NONE"
+    side="CLIENT"
