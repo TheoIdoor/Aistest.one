@@ -45,7 +45,7 @@ public class GeminiService {
                 String json = Files.readString(cfg, StandardCharsets.UTF_8);
                 JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
                 if (obj.has("apiKey")) {
-                    apiKey = obj.get("apiKey").getAsString();
+                    apiKey = obj.get("apiKey").getAsString().trim();
                 }
             } catch (Exception ignored) {
             }
@@ -55,7 +55,7 @@ public class GeminiService {
     }
 
     public static void saveApiKey(String newKey) {
-        apiKey = newKey;
+        apiKey = newKey != null ? newKey.trim() : "";
         JsonObject obj = new JsonObject();
         obj.addProperty("apiKey", apiKey);
         try {
@@ -75,7 +75,9 @@ public class GeminiService {
         }
 
         try {
-            String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+            String cleanKey = apiKey.trim();
+            // URL ohne ?key= Parameter, damit AQ.-Keys nicht abgelehnt werden
+            String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
             JsonObject root = new JsonObject();
             JsonArray contents = new JsonArray();
@@ -97,17 +99,20 @@ public class GeminiService {
             contents.add(contentObj);
             root.add("contents", contents);
 
+            // Übergabe über x-goog-api-key Header (funktioniert für AQ.-Keys und AIzaSy-Keys)
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))
                     .header("Content-Type", "application/json")
+                    .header("x-goog-api-key", cleanKey)
                     .POST(HttpRequest.BodyPublishers.ofString(root.toString(), StandardCharsets.UTF_8))
                     .build();
 
             HTTP_CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                     .thenAccept(response -> {
                         if (response.statusCode() != 200) {
+                            String errMsg = extractErrorMessage(response.body());
                             Minecraft.getInstance().execute(() ->
-                                    callback.accept("§cAPI-Fehler (HTTP " + response.statusCode() + "). Prüfe deinen Key mit /apikey!"));
+                                    callback.accept("§cAPI-Fehler (HTTP " + response.statusCode() + "): " + errMsg));
                             return;
                         }
 
@@ -139,6 +144,17 @@ public class GeminiService {
         } catch (Exception e) {
             return "Fehler beim Lesen der KI-Antwort.";
         }
+    }
+
+    private static String extractErrorMessage(String json) {
+        try {
+            JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
+            if (obj.has("error")) {
+                return obj.getAsJsonObject("error").get("message").getAsString();
+            }
+        } catch (Exception ignored) {
+        }
+        return "Prüfe deinen Key mit /apikey!";
     }
 
     private static String processActionsAndCleanText(String aiResponse) {
